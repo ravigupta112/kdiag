@@ -1,0 +1,129 @@
+"""Helm / deployment-log parser. Table driven, linear-time regexes, unknown by default."""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+from .models import Confidence, Finding
+
+MAX_CHARS = 200_000  # keep the tail: errors are at the end of CI logs
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
+_CI_TS = re.compile(r"^\s*\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?\s+", re.MULTILINE)
+_WS = re.compile(r"[ \t]+")
+
+
+@dataclass(frozen=True)
+class _Pattern:
+    id: str
+    sub: str
+    regex: re.Pattern[str]
+    confidence: Confidence
+    definitive: bool
+    summary: str
+    next_action: str
+
+
+def _p(id_: str, sub: str, rx: str, conf: Confidence, definitive: bool, summary: str, nxt: str) -> _Pattern:
+    return _Pattern(id_, sub, re.compile(rx, re.IGNORECASE), conf, definitive, summary, nxt)
+
+
+# Order matters: most specific first.
+PATTERNS: tuple[_Pattern, ...] = (
+    _p("HLM-003", "release_locked",
+       r"another operation \((?:install|upgrade|rollback)[^)\n]{0,40}\) is in progress",
+       "high", True, "Another Helm operation holds the release lock",
+       "Wait for the other operation, or inspect the release for a stuck pending-* state"),
+    _p("HLM-006", "ownership_conflict",
+       r"exists and cannot be imported into the current release"
+       r"|rendered manifests contain a resource that already exists",
+       "high", True, "A rendered resource already exists outside this Helm release",
+       "Remove or adopt the existing resource, or choose a different name"),
+    _p("HLM-005", "name_in_use", r"cannot re-use a name that is still in use",
+       "high", True, "A Helm release with this name already exists",
+       "Use `upgrade` for the existing release or pick another release name"),
+    _p("HLM-002", "release_not_found",
+       r"release: not found|has no deployed releases",
+       "high", True, "Helm could not find the release",
+       "Check the release name and namespace"),
+    _p("HLM-004", "yaml_error",
+       r"mapping values are not allowed|did not find expected key|could not find expected"
+       r"|yaml: line \d+",
+       "high", True, "Chart or values YAML is malformed",
+       "Fix the YAML syntax at the line reported in the Helm output"),
+    _p("HLM-004", "template_error",
+       r"parse error|error calling \w+|failed to render|template: [^\n]{0,200}executing",
+       "high", True, "Helm could not render the chart templates",
+       "Check template syntax and that values match the types the chart expects"),
+    _p("HLM-007", "namespace_terminating",
+       r"because it is being terminated|namespace \"?[a-z0-9-]+\"? is (?:being )?terminating",
+       "high", True, "The target namespace is terminating",
+       "Wait for the namespace deletion to finish, or use another namespace"),
+    _p("HLM-001", "wait_timeout", r"timed out waiting for the condition",
+       "medium", False, "Helm gave up waiting for resources to become ready (an outcome, not a cause)",
+       "Look at the cluster findings to see which resource never became ready"),
+    _p("HLM-009", "deadline_exceeded", r"context deadline exceeded",
+       "low", False, "A Helm or API call hit its deadline (wait timeout or API server slowness)",
+       "Check API server reachability and rerun; compare with cluster findings"),
+)
+
+_RESOURCE = re.compile(
+    r"\b(Deployment|StatefulSet|DaemonSet|Job|CronJob|Pod|Service|PersistentVolumeClaim"
+    r"|ConfigMap|Ingress)/([a-z0-9][a-z0-9.-]{0,251})")
+_NAMESPACE = re.compile(r"in namespace \"([a-z0-9-]{1,63})\"|(?:--namespace|-n)[= ]([a-z0-9-]{1,63})")
+
+
+@dataclass(frozen=True)
+class ParseResult:
+    kind: str  # pattern id, or "unknown"
+    sub_cause: str = "unknown"
+    confidence: Confidence = "low"
+    definitive: bool = False
+    summary: str = ""
+    next_action: str = ""
+    extracted: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    all_matches: tuple[str, ...] = ()
+    truncated: bool = False
+
+
+def clean(text: str) -> tuple[str, bool]:
+    truncated = len(text) > MAX_CHARS
+    text = text[-MAX_CHARS:] if truncated else text
+    text = _ANSI.sub("", text).replace("\r", "")
+    text = _CI_TS.sub("", text)
+    return _WS.sub(" ", text), truncated
+
+
+def parse_helm(text: str | None) -> ParseResult:
+    if not text or not text.strip():
+        return ParseResult(kind="unknown")
+    cleaned, truncated = clean(text)
+    matches = [p for p in PATTERNS if p.regex.search(cleaned)]
+    extracted: dict[str, tuple[str, ...]] = {}
+    resources = sorted({f"{k}/{n}" for k, n in _RESOURCE.findall(cleaned)})[:20]
+    if resources:
+        extracted["resources"] = tuple(resources)
+    ns = sorted({a or b for a, b in _NAMESPACE.findall(cleaned)})[:5]
+    if ns:
+        extracted["namespaces"] = tuple(ns)
+    if not matches:
+        return ParseResult(kind="unknown", extracted=extracted, truncated=truncated)
+    top = matches[0]
+    return ParseResult(
+        kind=top.id, sub_cause=top.sub, confidence=top.confidence, definitive=top.definitive,
+        summary=top.summary, next_action=top.next_action, extracted=extracted,
+        all_matches=tuple(f"{m.id}:{m.sub}" for m in matches), truncated=truncated,
+    )
+
+
+def helm_finding(result: ParseResult) -> Finding | None:
+    if result.kind == "unknown":
+        return None
+    details = {k: ", ".join(v) for k, v in result.extracted.items()}
+    return Finding(
+        rule_id=result.kind, sub_cause=result.sub_cause, confidence=result.confidence,
+        summary=result.summary, next_action=result.next_action,
+        evidence_refs=("helm_output",), definitive=result.definitive,
+        outcome_only=not result.definitive, causal_order=0 if result.definitive else 100,
+        priority=100 if result.definitive else 10, details=details,
+    )
