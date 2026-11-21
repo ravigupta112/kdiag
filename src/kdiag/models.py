@@ -92,14 +92,14 @@ class PartialReadError(_M):
 
 
 class Limits(_M):
-    max_pods: int = 50  # pods analysed
-    max_events: int = 500  # events analysed
-    max_pods_fetched: int = 500  # hard ceiling on what the source may return; selection happens after
-    max_events_fetched: int = 2000
-    concurrency: int = 8
-    request_timeout_s: float = 5.0
-    overall_timeout_s: float = 30.0
-    max_report_bytes: int = 262_144
+    max_pods: int = Field(default=50, ge=0)  # pods analysed
+    max_events: int = Field(default=500, ge=0)  # events analysed
+    max_pods_fetched: int = Field(default=500, ge=0)  # hard ceiling on what the source may return
+    max_events_fetched: int = Field(default=2000, ge=0)
+    concurrency: int = Field(default=8, ge=1)
+    request_timeout_s: float = Field(default=5.0, gt=0)
+    overall_timeout_s: float = Field(default=30.0, gt=0)
+    max_report_bytes: int = Field(default=262_144, ge=1)
 
 
 class DiagnosisInput(_M):

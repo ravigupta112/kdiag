@@ -9,6 +9,7 @@ from .helm import helm_finding, parse_helm
 from .models import (
     DiagnosisInput,
     DiagnosisReport,
+    EventEvidence,
     Evidence,
     Finding,
     PartialReadError,
@@ -69,7 +70,20 @@ async def diagnose(
                     by_name = {p.name: p for p in pods}
                     by_name.update({p.name: p for p in got.pods})
                     pods = tuple(by_name.values())
-                    events = events + got.events
+                    merged_events: dict[tuple[object, ...], EventEvidence] = {}
+                    for event in (*events, *got.events):
+                        key = (
+                            event.object_kind,
+                            event.object_name,
+                            event.type,
+                            event.reason,
+                            event.message,
+                            event.timestamp,
+                            event.count,
+                            event.time_unknown,
+                        )
+                        merged_events.setdefault(key, event)
+                    events = tuple(merged_events.values())
                     available |= set(got.available)
                     truncated = got.truncated
         except TimeoutError:

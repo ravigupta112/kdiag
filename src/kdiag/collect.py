@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TypeVar
 
+from .mask import mask_text
 from .models import (
     EventEvidence,
     Evidence,
@@ -36,7 +37,11 @@ class Collector:
             self.errors.append(PartialReadError(resource=resource, reason="timeout", retryable=True))
         except SourceError as exc:
             self.errors.append(PartialReadError(
-                resource=resource, reason=exc.reason, retryable=exc.retryable, detail=exc.detail))
+                resource=resource,
+                reason=exc.reason,
+                retryable=exc.retryable,
+                detail=mask_text(exc.detail),
+            ))
         except Exception:  # noqa: BLE001 - never leak exception text; it may carry credentials
             self.errors.append(PartialReadError(resource=resource, reason="error"))
         return None

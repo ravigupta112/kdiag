@@ -112,4 +112,4 @@ pytest
 
 ## License
 
-To be decided.
+MIT License. See [LICENSE](LICENSE).

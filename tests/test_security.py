@@ -7,7 +7,7 @@ import re
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from kdiag import DiagnosisInput, Target, models
+from kdiag import DiagnosisInput, Limits, Target, models
 
 SRC = pathlib.Path(__file__).parent.parent / "src" / "kdiag"
 FORBIDDEN_IMPORTS = re.compile(r"\b(subprocess|shlex|pty|os\.system|os\.popen|os\.exec\w*|os\.spawn\w*)\b")
@@ -38,6 +38,21 @@ def test_models_are_frozen_and_reject_unknown_fields() -> None:
         t.name = "y"  # type: ignore[misc]
     with pytest.raises(ValidationError):
         Target(name="x", kubeconfig="whatever")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"concurrency": 0},
+        {"request_timeout_s": 0},
+        {"overall_timeout_s": -1},
+        {"max_pods": -1},
+        {"max_report_bytes": 0},
+    ],
+)
+def test_limits_reject_invalid_bounds(kwargs: dict[str, int | float]) -> None:
+    with pytest.raises(ValidationError):
+        Limits(**kwargs)
 
 
 def test_input_validation() -> None:

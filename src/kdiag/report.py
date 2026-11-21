@@ -28,7 +28,10 @@ def _mask_finding(f: Finding) -> Finding:
         "summary": mask_text(f.summary) or "",
         "next_action": mask_text(f.next_action) or "",
         "evidence_refs": tuple(mask_text(r) or "" for r in f.evidence_refs),
-        "details": {k: mask_text(v) or "" for k, v in f.details.items()},
+        "details": {
+            (mask_text(k) or "")[:2000]: mask_text(v) or ""
+            for k, v in f.details.items()
+        },
     })
 
 
@@ -81,4 +84,23 @@ def build_report(
     limit = inp.limits.max_report_bytes
     while len(report.model_dump_json()) > limit and report.supporting:
         report = report.model_copy(update={"supporting": report.supporting[:-1], "truncated": True})
+    if len(report.model_dump_json()) > limit and report.primary:
+        compact_primary = report.primary.model_copy(update={
+            "summary": mask_text(report.primary.summary, max_len=500) or "",
+            "next_action": mask_text(report.primary.next_action, max_len=500) or "",
+            "evidence_refs": report.primary.evidence_refs[:10],
+            "details": {},
+        })
+        report = report.model_copy(update={
+            "primary": compact_primary,
+            "supporting": (),
+            "truncated": True,
+        })
+    if len(report.model_dump_json()) > limit:
+        report = report.model_copy(update={
+            "candidates": (),
+            "skipped_rules": (),
+            "rule_errors": (),
+            "truncated": True,
+        })
     return report
