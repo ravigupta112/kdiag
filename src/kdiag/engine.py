@@ -9,15 +9,14 @@ from .helm import helm_finding, parse_helm
 from .models import (
     DiagnosisInput,
     DiagnosisReport,
-    EventEvidence,
     Evidence,
     Finding,
     PartialReadError,
-    PodEvidence,
     SkippedRule,
     Status,
+    WorkloadStatus,
 )
-from .normalize import normalize
+from .normalize import normalize, normalize_workload
 from .report import build_report
 from .rules import Registry, default_registry
 from .sources import EvidenceSource
@@ -36,13 +35,16 @@ async def diagnose(
     helm_text = "\n".join(t for t in (inp.helm_output, inp.job_log) if t)
     helm = helm_finding(parse_helm(helm_text))
 
-    pods: tuple[PodEvidence, ...] = inp.pods
+    pods = inp.pods
     events = inp.events
+    workload: WorkloadStatus | None = inp.workload_status
     available: set[str] = set()
     if inp.pods:
         available.add("pods")
     if inp.events:
         available.add("events")
+    if workload is not None:
+        available.add("workload")
     errors: list[PartialReadError] = []
     truncated = False
     candidates: tuple[str, ...] = ()
@@ -66,41 +68,32 @@ async def diagnose(
                     override = "ambiguous_target"
                     candidates = tuple(sorted(f"{r.namespace}/{r.kind}/{r.name}" for r in refs))
                 else:
-                    got = await collector.collect(refs[0])
-                    by_name = {p.name: p for p in pods}
-                    by_name.update({p.name: p for p in got.pods})
-                    pods = tuple(by_name.values())
-                    merged_events: dict[tuple[object, ...], EventEvidence] = {}
-                    for event in (*events, *got.events):
-                        key = (
-                            event.object_kind,
-                            event.object_name,
-                            event.type,
-                            event.reason,
-                            event.message,
-                            event.timestamp,
-                            event.count,
-                            event.time_unknown,
-                        )
-                        merged_events.setdefault(key, event)
-                    events = tuple(merged_events.values())
-                    available |= set(got.available)
-                    truncated = got.truncated
+                    await collector.collect(refs[0])
         except TimeoutError:
             collector.errors.append(
                 PartialReadError(resource="overall", reason="timeout", retryable=True))
+        got = collector.snapshot()  # whatever was gathered, even if the deadline cut collection short
+        by_name = {p.name: p for p in pods}
+        by_name.update({p.name: p for p in got.pods})
+        pods = tuple(by_name.values())
+        events = events + got.events
+        workload = got.workload or workload
+        available |= set(got.available)
+        truncated = got.truncated
         errors = list(collector.errors)
 
     pods, events, stale = normalize(pods, events, inp.window_start)
     ev = Evidence(
-        pods=pods, events=events, available=frozenset(available),
-        partial_errors=tuple(errors), truncated=truncated, stale_events_suppressed=stale,
+        pods=pods, events=events, workload=normalize_workload(workload),
+        available=frozenset(available), partial_errors=tuple(errors), truncated=truncated,
+        stale_events_suppressed=stale,
     )
 
     findings: list[Finding] = []
     skipped: list[SkippedRule] = []
     rule_errors: list[str] = []
-    if override is None:
+    # An unreachable cluster still lets rules run over evidence the caller supplied.
+    if override in (None, "cluster_unreachable"):
         for rule in reg.all():
             missing = tuple(sorted(rule.requires - ev.available))
             if missing:

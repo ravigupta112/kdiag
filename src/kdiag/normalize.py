@@ -1,16 +1,11 @@
 """Mask and normalise evidence before any rule sees it."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from .mask import mask_text
-from .models import Condition, ContainerEvidence, EventEvidence, PodEvidence
-
-
-def _utc(ts: datetime | None) -> datetime | None:
-    if ts is None:
-        return None
-    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
+from .models import Condition, EventEvidence, PodEvidence, WorkloadStatus
+from .timeutil import to_utc
 
 
 def _pod(p: PodEvidence) -> PodEvidence:
@@ -34,11 +29,11 @@ def normalize(
     Events with a missing timestamp are kept but flagged time_unknown. Events older
     than window_start are suppressed and counted. Naive timestamps are treated as UTC.
     """
-    start = _utc(window_start)
+    start = to_utc(window_start)
     kept: list[EventEvidence] = []
     stale = 0
     for e in events:
-        ts = _utc(e.timestamp)
+        ts = to_utc(e.timestamp)
         if ts is not None and start is not None and ts < start:
             stale += 1
             continue
@@ -49,4 +44,12 @@ def normalize(
     return tuple(_pod(p) for p in pods), tuple(kept), stale
 
 
-__all__ = ["ContainerEvidence", "normalize"]
+def normalize_workload(ws: WorkloadStatus | None) -> WorkloadStatus | None:
+    if ws is None:
+        return None
+    return ws.model_copy(update={"conditions": tuple(
+        Condition(type=c.type, status=c.status, reason=c.reason, message=mask_text(c.message))
+        for c in ws.conditions)})
+
+
+__all__ = ["normalize", "normalize_workload"]

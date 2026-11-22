@@ -1,4 +1,8 @@
-"""Bounded, timeout-controlled collection. Every failure becomes a PartialReadError."""
+"""Bounded, timeout-controlled collection. Every failure becomes a PartialReadError.
+
+State accumulates on the instance, so if the overall deadline fires midway the evidence
+gathered so far is still available through snapshot().
+"""
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +10,6 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TypeVar
 
-from .mask import mask_text
 from .models import (
     EventEvidence,
     Evidence,
@@ -14,11 +17,24 @@ from .models import (
     PartialReadError,
     PodEvidence,
     WorkloadRef,
+    WorkloadStatus,
 )
 from .sources import EvidenceSource, SourceError
+from .timeutil import to_utc
 
 T = TypeVar("T")
-_HEALTHY = {"Running", "Succeeded"}
+
+
+def _failing(p: PodEvidence) -> bool:
+    """True if the pod looks unhealthy. Phase alone is not enough: a crash-looping pod is Running."""
+    if p.phase == "Succeeded":
+        return False
+    if p.phase != "Running":
+        return True
+    return any(
+        (not c.ready and not c.is_init) or c.waiting_reason is not None or c.restart_count > 0
+        for c in p.containers
+    )
 
 
 class Collector:
@@ -27,6 +43,11 @@ class Collector:
         self._limits = limits
         self._sem = asyncio.Semaphore(limits.concurrency)
         self.errors: list[PartialReadError] = []
+        self._pods: list[PodEvidence] = []
+        self._events: list[EventEvidence] = []
+        self._workload: WorkloadStatus | None = None
+        self._available: set[str] = set()
+        self._truncated = False
 
     async def call(self, resource: str, fn: Callable[[], Awaitable[T]]) -> T | None:
         try:
@@ -37,44 +58,42 @@ class Collector:
             self.errors.append(PartialReadError(resource=resource, reason="timeout", retryable=True))
         except SourceError as exc:
             self.errors.append(PartialReadError(
-                resource=resource,
-                reason=exc.reason,
-                retryable=exc.retryable,
-                detail=mask_text(exc.detail),
-            ))
+                resource=resource, reason=exc.reason, retryable=exc.retryable, detail=exc.detail))
         except Exception:  # noqa: BLE001 - never leak exception text; it may carry credentials
             self.errors.append(PartialReadError(resource=resource, reason="error"))
         return None
 
     async def collect(self, ref: WorkloadRef) -> Evidence:
         lim = self._limits
-        available: set[str] = set()
-        truncated = False
-
         # Fetch up to a ceiling, then select: truncating at the source could drop the failing pod.
-        pods = await self.call(
-            "pods", lambda: self._src.list_pods(ref, lim.max_pods_fetched + 1))
-        pod_list: list[PodEvidence] = []
+        ws, pods = await asyncio.gather(
+            self.call("workload_status", lambda: self._src.get_workload_status(ref)),
+            self.call("pods", lambda: self._src.list_pods(ref, lim.max_pods_fetched + 1)),
+        )
+        if ws is not None:
+            self._workload = ws
+            self._available.add("workload")
         if pods is not None:
-            available.add("pods")
+            self._available.add("pods")
             if len(pods) > lim.max_pods:
-                truncated = True  # includes the case where the fetch ceiling itself was hit
-            # failing pods first, then by name: deterministic under truncation
-            pod_list = sorted(pods, key=lambda p: (p.phase in _HEALTHY, p.name))[: lim.max_pods]
+                self._truncated = True  # includes the case where the fetch ceiling itself was hit
+            self._pods = sorted(pods, key=lambda p: (not _failing(p), p.name))[: lim.max_pods]
 
-        names = [p.name for p in pod_list]
+        names = [p.name for p in self._pods]
         events = await self.call(
             "events", lambda: self._src.list_events(ref, names, lim.max_events_fetched + 1))
-        event_list: list[EventEvidence] = []
         if events is not None:
-            available.add("events")
+            self._available.add("events")
             if len(events) > lim.max_events:
-                truncated = True
+                self._truncated = True
             floor = datetime.min.replace(tzinfo=UTC)
-            event_list = sorted(
-                events, key=lambda e: e.timestamp or floor, reverse=True)[: lim.max_events]
+            self._events = sorted(
+                events, key=lambda e: to_utc(e.timestamp) or floor, reverse=True)[: lim.max_events]
+        return self.snapshot()
 
+    def snapshot(self) -> Evidence:
         return Evidence(
-            pods=tuple(pod_list), events=tuple(event_list), available=frozenset(available),
-            partial_errors=tuple(self.errors), truncated=truncated,
+            pods=tuple(self._pods), events=tuple(self._events), workload=self._workload,
+            available=frozenset(self._available), partial_errors=tuple(self.errors),
+            truncated=self._truncated,
         )

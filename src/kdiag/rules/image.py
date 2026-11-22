@@ -44,7 +44,8 @@ _NEXT = {
     "inspect_error": "Check the container runtime on the node and the image manifest",
     "generic": "Read the pod's Failed events for the full pull error",
 }
-_IMAGE = re.compile(r'image "([^"]+)"')
+# Reflected into summaries, so restrict to legal image-reference characters (no markup, no spaces).
+_IMAGE = re.compile(r'image "([A-Za-z0-9._:/@+-]{1,300})"')
 
 
 @dataclass

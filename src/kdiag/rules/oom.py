@@ -15,6 +15,16 @@ class OOMKilledRule:
             for c in pod.containers:
                 if "OOMKilled" not in (c.terminated_reason, c.last_terminated_reason):
                     continue
+                if c.ready and c.waiting_reason is None:
+                    out.append(Finding(
+                        rule_id=self.id, sub_cause="previous_oom", confidence="low",
+                        summary=f"Container {c.name} was killed for memory earlier but is running now",
+                        next_action="Check memory use and limits if restarts keep happening",
+                        evidence_refs=(f"pod/{pod.name}/container/{c.name}",),
+                        causal_order=60, priority=self.priority,
+                        details={"restarts": str(c.restart_count)},
+                    ))
+                    continue
                 limit = c.memory_limit
                 where = f" (limit {limit})" if limit else ""
                 details = {"restarts": str(c.restart_count)}

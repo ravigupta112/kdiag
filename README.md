@@ -66,7 +66,8 @@ A test fake is included in `kdiag.testing`.
 1. `diagnosed`: a cause was found.
 2. `partial`: some evidence could not be read; gaps are listed in `partial_errors`.
 3. `unknown`: no rule matched. Nothing is guessed.
-4. `no_issue_detected`: the evidence looks healthy.
+4. `no_issue_detected`: pods are healthy **and** the rollout is complete (needs `workload_status`).
+   Healthy pods alone give `unknown` plus a note, because old-revision pods can look fine while a new rollout is stuck.
 5. `ambiguous_target`: several deployments match; `candidates` lists them.
 6. `target_not_found` and `cluster_unreachable`.
 
@@ -83,10 +84,13 @@ Rules that lack the evidence they need appear in `skipped_rules` instead of sile
 ## Safety guarantees
 
 1. No subprocess or command execution anywhere in the source (enforced by a test).
-2. No cluster write calls (enforced by a test).
+2. The source protocol has read methods only; a source-scan test rejects Kubernetes client write calls.
 3. Models have no field that can hold Secret values, tokens, env values, or kubeconfigs.
-4. Every source read is time-limited and size-limited; failures become `partial_errors`.
+4. Every source read is time-limited; the collector caps what it analyses, and failures become `partial_errors`.
+   Adapters must paginate to the requested ceiling, because the collector can only trim what a source returns.
 5. Exception text is never copied into reports, because it can carry credentials.
+6. `Limits` has hard ceilings and names must be DNS-1123 strings, but the hosting service must still set
+   limits from server config, never from request data.
 
 ## Add a rule
 
@@ -101,6 +105,15 @@ ruff check src tests
 mypy src
 pytest
 ```
+
+## Known limitations
+
+1. Masking is pattern-based. Bare `AUTH=` style keys are not masked (it would mangle `unauthorized`);
+   a secret with no recognisable key or shape can still pass. Keep logs behind debug authorization.
+2. Helm retry recovery relies on Helm's own success text (`has been upgraded/installed`).
+3. Rollout status covers Deployment/StatefulSet; Job and CronJob cannot yet be confirmed healthy.
+4. A pod `Unschedulable` during a cluster-autoscaler scale-up is reported as a cause; check for scale-up events.
+5. Helm patterns anchored to `Error:` lines can still match other tools that print `Error: ... parse error`.
 
 ## Roadmap
 

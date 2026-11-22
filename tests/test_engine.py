@@ -22,7 +22,7 @@ from kdiag import (
     diagnose,
     render_text,
 )
-from kdiag.models import Condition
+from kdiag.models import Condition, WorkloadStatus
 from kdiag.normalize import normalize
 from kdiag.rules import Registry, default_registry
 from kdiag.testing import FakeSource
@@ -123,9 +123,11 @@ def test_s10_cluster_unreachable() -> None:
     assert r.status == "cluster_unreachable" and r.partial_errors[0].retryable
 
 
-def test_s11_healthy_is_no_issue_detected() -> None:
+def test_s11_healthy_needs_pods_and_a_completed_rollout() -> None:
     healthy = pod(containers=[ctr(ready=True)])
-    r = run(diagnose(ev_input(pods=(healthy,)), now=NOW))
+    ws = WorkloadStatus(generation=3, observed_generation=3, replicas=1, updated_replicas=1,
+                        ready_replicas=1, available_replicas=1)
+    r = run(diagnose(ev_input(pods=(healthy,), workload_status=ws), now=NOW))
     assert r.status == "no_issue_detected" and r.primary is None
 
 
@@ -192,7 +194,8 @@ def test_report_size_cap_trims_supporting_and_flags_truncation() -> None:
     pods += (unschedulable("0/3 nodes are available: 3 Insufficient cpu."),
              pod("c", containers=[ctr(waiting_reason="CrashLoopBackOff", last_exit_code=2)]))
     r = run(diagnose(ev_input(pods=pods, limits=Limits(max_report_bytes=1200)), now=NOW))
-    assert r.truncated and len(r.model_dump_json()) <= 1200 or r.supporting == ()
+    assert r.truncated
+    assert len(r.model_dump_json()) <= 1200 or r.supporting == ()
 
 
 def test_stale_events_suppressed_and_missing_timestamps_flagged() -> None:

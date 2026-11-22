@@ -6,9 +6,9 @@ never modelled; a test asserts no field name hints at credential content.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 SCHEMA_VERSION = 1
 
@@ -27,14 +27,20 @@ ReadFailure = Literal["forbidden", "not_found", "timeout", "rate_limited", "unre
 WorkloadKind = Literal["Deployment", "StatefulSet", "Job", "CronJob"]
 
 
+Name = Annotated[str, StringConstraints(max_length=253)]
+# Kubernetes DNS-1123 forms. Strict so names can never smuggle selector/URL syntax into API calls.
+DnsSubdomain = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")]
+DnsLabel = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")]
+
+
 class _M(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 class Target(_M):
     kind: WorkloadKind = "Deployment"
-    name: str = Field(min_length=1, max_length=253)
-    namespace: str | None = Field(default=None, max_length=63)
+    name: DnsSubdomain
+    namespace: DnsLabel | None = None
 
 
 class WorkloadRef(_M):
@@ -44,72 +50,95 @@ class WorkloadRef(_M):
 
 
 class Condition(_M):
-    type: str
-    status: str
-    reason: str | None = None
-    message: str | None = None
+    type: Name
+    status: Name
+    reason: Name | None = None
+    message: str | None = Field(default=None, max_length=20_000)
 
 
 class ContainerEvidence(_M):
-    name: str
+    name: Name
     is_init: bool = False
     ready: bool = False
     restart_count: int = 0
-    waiting_reason: str | None = None
-    waiting_message: str | None = None
-    terminated_reason: str | None = None
+    waiting_reason: Name | None = None
+    waiting_message: str | None = Field(default=None, max_length=20_000)
+    terminated_reason: Name | None = None
     terminated_exit_code: int | None = None
-    last_terminated_reason: str | None = None
+    last_terminated_reason: Name | None = None
     last_exit_code: int | None = None
-    memory_limit: str | None = None
+    memory_limit: Name | None = None
 
 
 class PodEvidence(_M):
-    name: str
-    namespace: str
-    phase: str = "Unknown"
-    node_name: str | None = None
-    conditions: tuple[Condition, ...] = ()
-    containers: tuple[ContainerEvidence, ...] = ()
+    name: Name
+    namespace: Name
+    phase: Name = "Unknown"
+    node_name: Name | None = None
+    conditions: tuple[Condition, ...] = Field(default=(), max_length=50)
+    containers: tuple[ContainerEvidence, ...] = Field(default=(), max_length=50)
+
+
+class WorkloadStatus(_M):
+    """Rollout state of a Deployment/StatefulSet. Needed before anything can be called healthy."""
+
+    generation: int = 0
+    observed_generation: int = 0
+    replicas: int = 0
+    updated_replicas: int = 0
+    ready_replicas: int = 0
+    available_replicas: int = 0
+    conditions: tuple[Condition, ...] = Field(default=(), max_length=50)
 
 
 class EventEvidence(_M):
-    object_kind: str
-    object_name: str
-    type: str = "Normal"
-    reason: str = ""
-    message: str = ""
+    object_kind: Name
+    object_name: Name
+    type: Name = "Normal"
+    reason: Name = ""
+    message: str = Field(default="", max_length=20_000)
     timestamp: datetime | None = None
     count: int = 1
     time_unknown: bool = False
 
 
 class PartialReadError(_M):
-    resource: str
+    resource: Name
     reason: ReadFailure
     retryable: bool = False
     detail: str | None = None
 
 
 class Limits(_M):
-    max_pods: int = Field(default=50, ge=0)  # pods analysed
-    max_events: int = Field(default=500, ge=0)  # events analysed
-    max_pods_fetched: int = Field(default=500, ge=0)  # hard ceiling on what the source may return
-    max_events_fetched: int = Field(default=2000, ge=0)
-    concurrency: int = Field(default=8, ge=1)
-    request_timeout_s: float = Field(default=5.0, gt=0)
-    overall_timeout_s: float = Field(default=30.0, gt=0)
-    max_report_bytes: int = Field(default=262_144, ge=1)
+    """Hard bounds. The hosting service must set these from server config, never from a request:
+    every field also has a ceiling here so a hostile caller cannot ask for unbounded work."""
+
+    max_pods: int = Field(default=50, ge=1, le=200)  # pods analysed
+    max_events: int = Field(default=500, ge=1, le=2000)  # events analysed
+    # ceiling on what a source may return; selection (failing pods first) happens after
+    max_pods_fetched: int = Field(default=500, ge=1, le=2000)
+    max_events_fetched: int = Field(default=2000, ge=1, le=10_000)
+    concurrency: int = Field(default=8, ge=1, le=32)
+    request_timeout_s: float = Field(default=5.0, gt=0, le=60)
+    overall_timeout_s: float = Field(default=30.0, gt=0, le=300)
+    max_report_bytes: int = Field(default=262_144, ge=1024, le=2_000_000)
+
+    @model_validator(mode="after")
+    def _fetch_covers_analysis(self) -> Limits:
+        if self.max_pods_fetched < self.max_pods or self.max_events_fetched < self.max_events:
+            raise ValueError("fetch ceilings must be >= analysed limits")
+        return self
 
 
 class DiagnosisInput(_M):
     mode: Mode
-    cluster_id: str | None = None
+    cluster_id: Name | None = None
     target: Target | None = None
-    namespace: str | None = None
-    release: str | None = None
-    pods: tuple[PodEvidence, ...] = ()
-    events: tuple[EventEvidence, ...] = ()
+    namespace: DnsLabel | None = None
+    release: DnsSubdomain | None = None
+    pods: tuple[PodEvidence, ...] = Field(default=(), max_length=500)
+    events: tuple[EventEvidence, ...] = Field(default=(), max_length=5000)
+    workload_status: WorkloadStatus | None = None
     helm_output: str | None = Field(default=None, max_length=1_000_000)
     job_log: str | None = Field(default=None, max_length=1_000_000)
     window_start: datetime | None = None
@@ -129,6 +158,7 @@ class DiagnosisInput(_M):
 class Evidence(_M):
     pods: tuple[PodEvidence, ...] = ()
     events: tuple[EventEvidence, ...] = ()
+    workload: WorkloadStatus | None = None
     available: frozenset[str] = frozenset()
     partial_errors: tuple[PartialReadError, ...] = ()
     truncated: bool = False
@@ -164,6 +194,7 @@ class DiagnosisReport(_M):
     partial_errors: tuple[PartialReadError, ...] = ()
     skipped_rules: tuple[SkippedRule, ...] = ()
     rule_errors: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
     candidates: tuple[str, ...] = ()
     stale_events_suppressed: int = 0
     truncated: bool = False

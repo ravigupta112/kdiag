@@ -13,6 +13,7 @@ from .models import (
     PodEvidence,
     Target,
     WorkloadRef,
+    WorkloadStatus,
 )
 from .render import render_text
 from .sources import EvidenceSource, SourceError
@@ -32,6 +33,7 @@ __all__ = [
     "SourceError",
     "Target",
     "WorkloadRef",
+    "WorkloadStatus",
     "diagnose",
     "render_text",
 ]

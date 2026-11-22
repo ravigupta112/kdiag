@@ -4,7 +4,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from .models import EventEvidence, PodEvidence, ReadFailure, Target, WorkloadRef
+from .models import (
+    EventEvidence,
+    PodEvidence,
+    ReadFailure,
+    Target,
+    WorkloadRef,
+    WorkloadStatus,
+)
 
 
 class SourceError(Exception):
@@ -19,6 +26,8 @@ class EvidenceSource(Protocol):
     """Read-only. Implementations must authorise server-side and never expose credentials."""
 
     async def find_workloads(self, target: Target) -> list[WorkloadRef]: ...
+
+    async def get_workload_status(self, ref: WorkloadRef) -> WorkloadStatus: ...
 
     async def list_pods(self, ref: WorkloadRef, limit: int) -> list[PodEvidence]: ...
 

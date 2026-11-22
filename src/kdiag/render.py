@@ -31,6 +31,9 @@ def render_text(r: DiagnosisReport) -> str:
     if r.skipped_rules:
         out.append("RULES SKIPPED (missing evidence)")
         out += [f"  - {s.rule_id}: needs {', '.join(s.missing)}" for s in r.skipped_rules]
+    if r.notes:
+        out.append("NOTES")
+        out += [f"  - {n}" for n in r.notes]
     if r.rule_errors:
         out.append(f"RULE ERRORS: {', '.join(r.rule_errors)}")
     if r.truncated:

@@ -47,12 +47,13 @@ PATTERNS: tuple[_Pattern, ...] = (
        "high", True, "Helm could not find the release",
        "Check the release name and namespace"),
     _p("HLM-004", "yaml_error",
-       r"mapping values are not allowed|did not find expected key|could not find expected"
-       r"|yaml: line \d+",
+       r"^\s*Error:[^\n]{0,300}?(?:mapping values are not allowed|did not find expected key"
+       r"|could not find expected|yaml: line \d+)",
        "high", True, "Chart or values YAML is malformed",
        "Fix the YAML syntax at the line reported in the Helm output"),
     _p("HLM-004", "template_error",
-       r"parse error|error calling \w+|failed to render|template: [^\n]{0,200}executing",
+       r"^\s*Error:[^\n]{0,300}?(?:parse error|error calling \w+|failed to render"
+       r"|template: [^\n]{0,200}executing)|parse error at \(",
        "high", True, "Helm could not render the chart templates",
        "Check template syntax and that values match the types the chart expects"),
     _p("HLM-007", "namespace_terminating",
@@ -66,6 +67,9 @@ PATTERNS: tuple[_Pattern, ...] = (
        "low", False, "A Helm or API call hit its deadline (wait timeout or API server slowness)",
        "Check API server reachability and rerun; compare with cluster findings"),
 )
+
+# A success line after an error means that error was a retried/recovered step, not the failure.
+_SUCCESS = re.compile(r"has been (?:upgraded|installed)\b|STATUS: deployed", re.IGNORECASE)
 
 _RESOURCE = re.compile(
     r"\b(Deployment|StatefulSet|DaemonSet|Job|CronJob|Pod|Service|PersistentVolumeClaim"
@@ -83,6 +87,7 @@ class ParseResult:
     next_action: str = ""
     extracted: dict[str, tuple[str, ...]] = field(default_factory=dict)
     all_matches: tuple[str, ...] = ()
+    resolved: tuple[str, ...] = ()  # matches ignored because a success line followed them
     truncated: bool = False
 
 
@@ -98,7 +103,19 @@ def parse_helm(text: str | None) -> ParseResult:
     if not text or not text.strip():
         return ParseResult(kind="unknown")
     cleaned, truncated = clean(text)
-    matches = [p for p in PATTERNS if p.regex.search(cleaned)]
+    last_ok = max((m.end() for m in _SUCCESS.finditer(cleaned)), default=-1)
+    hits: list[tuple[_Pattern, int]] = []
+    resolved: list[str] = []
+    for pat in PATTERNS:
+        last = None
+        for last in pat.regex.finditer(cleaned):
+            pass
+        if last is None:
+            continue
+        if last.start() < last_ok:
+            resolved.append(f"{pat.id}:{pat.sub}")
+        else:
+            hits.append((pat, last.start()))
     extracted: dict[str, tuple[str, ...]] = {}
     resources = sorted({f"{k}/{n}" for k, n in _RESOURCE.findall(cleaned)})[:20]
     if resources:
@@ -106,13 +123,17 @@ def parse_helm(text: str | None) -> ParseResult:
     ns = sorted({a or b for a, b in _NAMESPACE.findall(cleaned)})[:5]
     if ns:
         extracted["namespaces"] = tuple(ns)
-    if not matches:
-        return ParseResult(kind="unknown", extracted=extracted, truncated=truncated)
-    top = matches[0]
+    if not hits:
+        return ParseResult(kind="unknown", extracted=extracted, resolved=tuple(resolved),
+                           truncated=truncated)
+    # definitive first; among equals the most recent occurrence wins
+    hits.sort(key=lambda h: (not h[0].definitive, -h[1]))
+    top = hits[0][0]
     return ParseResult(
         kind=top.id, sub_cause=top.sub, confidence=top.confidence, definitive=top.definitive,
         summary=top.summary, next_action=top.next_action, extracted=extracted,
-        all_matches=tuple(f"{m.id}:{m.sub}" for m in matches), truncated=truncated,
+        all_matches=tuple(f"{h[0].id}:{h[0].sub}" for h in hits), resolved=tuple(resolved),
+        truncated=truncated,
     )
 
 
