@@ -17,13 +17,13 @@ Give it evidence (events, pods, Helm output) or a deployment name, and it return
 ## Install
 
 ```bash
-pip install -e ".[dev]"      # everything, for development
-pytest                       # 468 tests
+uv sync --extra dev          # everything, for development
+uv run pytest                # 468 tests
 
-pip install kdiag            # core only (depends on pydantic alone)
-pip install "kdiag[k8s]"     # + Kubernetes adapter
-pip install "kdiag[service]" # + HTTP service
-pip install "kdiag[metrics]" # + Prometheus metrics
+uv pip install kdiag            # core only (depends on pydantic alone)
+uv pip install "kdiag[k8s]"     # + Kubernetes adapter
+uv pip install "kdiag[service]" # + HTTP service
+uv pip install "kdiag[metrics]" # + Prometheus metrics
 ```
 
 Requires Python 3.11+.
@@ -139,7 +139,7 @@ coverage_map.yaml tests/ examples/
 ## Develop
 
 ```bash
-ruff check src tests && mypy src && pytest
+uv run ruff check src tests && uv run mypy src && uv run pytest
 ```
 
 ## License

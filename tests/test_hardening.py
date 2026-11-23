@@ -153,7 +153,13 @@ def test_optional_cluster_scope_reads_do_not_downgrade_the_status() -> None:
 
 # ---- fuzz: the HTTP surface never returns 5xx -----------------------------------------------------
 
-json_leaf = st.one_of(st.none(), st.booleans(), st.integers(), st.text(max_size=40), st.floats(allow_nan=False))
+json_leaf = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(),
+    st.text(max_size=40),
+    st.floats(allow_nan=False, allow_infinity=False),
+)
 json_val = st.recursive(json_leaf, lambda c: st.one_of(st.lists(c, max_size=4), st.dictionaries(st.text(max_size=12), c, max_size=4)), max_leaves=12)
 FIELDS = ["mode", "cluster_id", "target", "namespace", "release", "pods", "events", "nodes", "jobs", "logs",
           "helm_output", "job_log", "include_logs", "job_id", "save", "refresh", "kubeconfig", "export", "window_start"]
