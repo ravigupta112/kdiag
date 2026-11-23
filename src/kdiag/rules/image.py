@@ -14,6 +14,7 @@ _SUB: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("auth_or_not_found", re.compile(r"(?i)pull access denied|repository does not exist or may require")),
     ("auth", re.compile(r"(?i)\b(?:401|403)\b|unauthorized|authentication required|access denied|denied: ")),
     ("not_found", re.compile(r"(?i)manifest unknown|not found|\b404\b|name unknown|does not exist")),
+    ("tls", re.compile(r"(?i)x509:|certificate (?:signed by unknown authority|has expired|is valid for)")),
     ("network", re.compile(r"(?i)tls handshake timeout|no such host|i/o timeout|connection refused|timeout")),
 )
 _BY_REASON: dict[str, tuple[str, Confidence]] = {
@@ -23,12 +24,14 @@ _BY_REASON: dict[str, tuple[str, Confidence]] = {
 }
 _CONF: dict[str, Confidence] = {
     "auth": "high", "not_found": "high", "auth_or_not_found": "medium", "network": "medium",
+    "tls": "high",
 }
 _SUMMARY = {
     "not_found": "Image {image} was not found in the registry",
     "auth": "The registry rejected the credentials used to pull {image}",
     "auth_or_not_found": "Pulling {image} was denied: either it does not exist or credentials are missing",
     "network": "The node could not reach the registry to pull {image}",
+    "tls": "The node does not trust the registry's TLS certificate for {image}",
     "invalid_name": "The image name {image} is invalid",
     "never_pull": "Image {image} is not on the node and imagePullPolicy is Never",
     "inspect_error": "The image {image} exists but could not be inspected",
@@ -39,6 +42,7 @@ _NEXT = {
     "auth": "Check the imagePullSecret referenced by the pod and its registry credentials",
     "auth_or_not_found": "Check the repository name and tag, then the imagePullSecret",
     "network": "Check registry DNS/TLS reachability from the node; retry if it looks transient",
+    "tls": "Check the registry certificate, its CA trust on the nodes, and certificate expiry",
     "invalid_name": "Fix the image reference (lowercase repository, valid tag)",
     "never_pull": "Pre-load the image on the node or change imagePullPolicy",
     "inspect_error": "Check the container runtime on the node and the image manifest",

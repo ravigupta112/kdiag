@@ -1,0 +1,119 @@
+# Maps every item (1-173) of the team's error master list to the rule that diagnoses it, or to an
+# explicit disposition. CI fails if an item is unmapped, double-mapped, or names an unknown rule.
+# Dispositions:
+#   INFO            not an error (normal lifecycle state)
+#   SYMPTOM         a generic status that other rules explain; no standalone rule
+#   STATUS          reported through the report status (target_not_found, etc.)
+#   SOURCE_ERROR    reported as a partial-read/source error, never as a workload finding
+#   NOT_IMPLEMENTED needs evidence kdiag does not read yet (honest gap)
+#   OUT_OF_SCOPE    cannot be diagnosed from deployment-scoped, read-only evidence
+rules:
+  SCHED-001: "1, 22-29"
+  IMG-001: "2-5, 39-47, 49, 91, 92-94"
+  POD-004: "6"
+  POD-002: "7, 9, 10"
+  CFG-001: "8, 89, 90, 125, 126"
+  POD-005: "12, 13"
+  POD-006: "14"
+  NODE-001: "15, 16, 17, 150-154"
+  ADM-001: "31-38, 48, 61, 81-88, 99, 108, 114, 118, 120, 124"
+  STO-001: "50, 51, 58-60, 62"
+  STO-002: "52-57, 63"
+  NET-001: "64, 65, 73, 74"
+  NET-002: "80"
+  APP-003: "66, 69"
+  PRB-001: "100-107"
+  WL-001: "110"
+  WL-002: "109"
+  WL-003: "116, 117"
+  APP-001: "123, 128-130"
+  APP-002: "131, 133"
+  HLM-001: "135, 136"
+  HLM-002: "137"
+  HLM-003: "138, 148"
+  HLM-004: "139, 140, 143, 146"
+  HLM-005: "141"
+  HLM-006: "142, 161"
+  HLM-009: "149"
+  HLM-010: "144, 147, 162, 171"
+  HLM-011: "167, 168, 170"
+  HLM-012: "145"
+  HLM-014: "172"
+dispositions:
+  INFO: {items: "18, 19, 112, 11", reason: "normal state or generic retry reason, not a cause"}
+  SYMPTOM: {items: "20, 21, 111", reason: "generic status explained by specific rules"}
+  STATUS: {items: "173", reason: "reported as status target_not_found"}
+  SOURCE_ERROR: {items: "158-160, 163-166, 169", reason: "API/credential errors surface as partial reads or cluster_unreachable"}
+  NOT_IMPLEMENTED:
+    items: "30, 67, 68, 70, 71, 72, 76-79, 95-98, 113, 115, 119, 121, 122, 127, 134, 155, 156"
+    reason: "needs Ingress, NetworkPolicy, HPA, cert-manager, DNS/CNI-health, kubelet or app-config evidence not read yet"
+  OUT_OF_SCOPE: {items: "75, 132, 157", reason: "needs traffic metrics, CI build output, or etcd/control-plane access"}
+
+# Executable samples: each runs real text through the real engine path and must produce rule/sub.
+samples:
+  - {item: 39, via: waiting, reason: ErrImagePull, text: 'Failed to pull image "r.io/a:1": failed to authorize: 401 Unauthorized', expect: IMG-001/auth}
+  - {item: 41, via: waiting, reason: ErrImagePull, text: 'Failed to pull image "r.io/a:1": rpc error: code = NotFound desc = not found', expect: IMG-001/not_found}
+  - {item: 42, via: waiting, reason: ImagePullBackOff, text: 'Failed to pull image "r.io/a:1": manifest unknown', expect: IMG-001/not_found}
+  - {item: 44, via: waiting, reason: ErrImagePull, text: 'Failed to pull image "r.io/a:1": net/http: TLS handshake timeout', expect: IMG-001/network}
+  - {item: 45, via: waiting, reason: ErrImagePull, text: 'Failed to pull image "r.io/a:1": dial tcp: lookup r.io: no such host', expect: IMG-001/network}
+  - {item: 47, via: waiting, reason: InvalidImageName, text: 'Failed to apply default image tag', expect: IMG-001/invalid_name}
+  - {item: 5, via: waiting, reason: ErrImageNeverPull, text: 'Container image "x" is not present with pull policy of Never', expect: IMG-001/never_pull}
+  - {item: 93, via: waiting, reason: ErrImagePull, text: 'Failed to pull image "r.io/a:1": x509: certificate signed by unknown authority', expect: IMG-001/tls}
+  - {item: 8, via: waiting, reason: CreateContainerConfigError, text: 'secret "my-secret" not found', expect: CFG-001/secret_not_found}
+  - {item: 126, via: waiting, reason: CreateContainerConfigError, text: 'configmap "my-config" not found', expect: CFG-001/configmap_not_found}
+  - {item: 9, via: waiting, reason: CreateContainerError, text: 'exec: "start": executable file not found in $PATH', expect: POD-002/exec_not_found}
+  - {item: 14, via: pod_evicted, text: 'The node was low on resource: ephemeral-storage.', expect: POD-006/disk}
+  - {item: 12, via: oom, text: '', expect: POD-005/memory_limit}
+  - {item: 6, via: crashloop, text: '', expect: POD-004/exit_1}
+  - {item: 24, via: sched, text: '0/3 nodes are available: 3 Insufficient memory.', expect: SCHED-001/insufficient}
+  - {item: 26, via: sched, text: "0/3 nodes are available: 3 node(s) didn't match Pod's node affinity/selector.", expect: SCHED-001/affinity}
+  - {item: 27, via: sched, text: '0/3 nodes are available: 3 node(s) had untolerated taint {k: v}.', expect: SCHED-001/taint}
+  - {item: 29, via: sched, text: "0/4 nodes are available: 4 node(s) didn't match pod topology spread constraints.", expect: SCHED-001/topology}
+  - {item: 32, via: event, kind: ReplicaSet, reason: FailedCreate, text: 'pods "x" is forbidden: exceeded quota: q, requested: requests.cpu=1', expect: ADM-001/quota}
+  - {item: 37, via: event, kind: ReplicaSet, reason: FailedCreate, text: 'maximum cpu usage per Container is 1, but limit is 2', expect: ADM-001/limit_range}
+  - {item: 81, via: event, kind: ReplicaSet, reason: FailedCreate, text: 'admission webhook "validate.kyverno.svc" denied the request: require labels', expect: ADM-001/webhook_denied}
+  - {item: 85, via: event, kind: Job, reason: FailedCreate, text: 'forbidden: User "system:serviceaccount:ci:bot" cannot create resource "pods"', expect: ADM-001/rbac_forbidden}
+  - {item: 88, via: event, kind: ReplicaSet, reason: FailedCreate, text: 'error looking up service account ns/sa: serviceaccount "sa" not found', expect: ADM-001/serviceaccount_missing}
+  - {item: 99, via: event, kind: ReplicaSet, reason: FailedCreate, text: 'violates PodSecurity "restricted:latest": runAsNonRoot', expect: ADM-001/pod_security}
+  - {item: 124, via: event, kind: Deployment, reason: FailedCreate, text: 'is invalid: spec.template.spec.containers[0].env[0].name: Invalid value', expect: ADM-001/invalid_spec}
+  - {item: 118, via: event, kind: CronJob, reason: FailedCreate, text: 'Error creating job: forbidden: exceeded quota: q', expect: ADM-001/quota}
+  - {item: 100, via: event, kind: Pod, reason: Unhealthy, text: 'Liveness probe failed: HTTP probe failed with statuscode: 404', expect: PRB-001/liveness_http_404}
+  - {item: 105, via: event, kind: Pod, reason: Unhealthy, text: 'Readiness probe failed: context deadline exceeded (Client.Timeout exceeded)', expect: PRB-001/readiness_timeout}
+  - {item: 106, via: event, kind: Pod, reason: Unhealthy, text: 'Startup probe failed: HTTP probe failed with statuscode: 500', expect: PRB-001/startup_http_500}
+  - {item: 52, via: event, kind: Pod, reason: FailedMount, text: 'MountVolume.SetUp failed: configmap "cfg" not found', expect: STO-002/source_missing}
+  - {item: 55, via: event, kind: Pod, reason: FailedAttachVolume, text: 'Multi-Attach error for volume "pvc-1"', expect: STO-002/multi_attach}
+  - {item: 63, via: event, kind: Pod, reason: FailedMount, text: 'mkdir /data: permission denied', expect: STO-002/permission}
+  - {item: 60, via: pvc, reason: ProvisioningFailed, text: 'failed to provision volume with StorageClass "fast": quota', expect: STO-001/provisioning_failed}
+  - {item: 58, via: pvc, reason: ProvisioningFailed, text: 'storageclass.storage.k8s.io "fast" not found', expect: STO-001/storageclass_missing}
+  - {item: 59, via: pvc, reason: FailedBinding, text: 'no persistent volumes available for this claim and no storage class is set', expect: STO-001/no_storage_class}
+  - {item: 80, via: event, kind: Pod, reason: FailedCreatePodSandBox, text: 'failed to assign an IP address to container', expect: NET-002/ip_exhausted}
+  - {item: 151, via: node, cond: DiskPressure, expect: NODE-001/disk_pressure}
+  - {item: 152, via: node, cond: MemoryPressure, expect: NODE-001/memory_pressure}
+  - {item: 153, via: node, cond: PIDPressure, expect: NODE-001/pid_pressure}
+  - {item: 154, via: node, cond: NetworkUnavailable, expect: NODE-001/network_unavailable}
+  - {item: 150, via: node, cond: Ready, expect: NODE-001/not_ready}
+  - {item: 116, via: job, reason: BackoffLimitExceeded, expect: WL-003/backoff_limit}
+  - {item: 117, via: job, reason: DeadlineExceeded, expect: WL-003/deadline_exceeded}
+  - {item: 109, via: workload, cond: Progressing, reason: ProgressDeadlineExceeded, expect: WL-002/progress_deadline}
+  - {item: 110, via: workload, cond: ReplicaFailure, reason: FailedCreate, expect: WL-001/replica_failure}
+  - {item: 128, via: log, text: "ModuleNotFoundError: No module named 'fastapi'", expect: APP-001/module_not_found}
+  - {item: 129, via: log, text: "ImportError: cannot import name 'x' from 'y'", expect: APP-001/import_error}
+  - {item: 130, via: log, text: "SyntaxError: invalid syntax", expect: APP-001/syntax_error}
+  - {item: 123, via: log, text: "KeyError: 'DATABASE_URL'", expect: APP-001/missing_env}
+  - {item: 131, via: log, text: "Error: Cannot find module 'next'", expect: APP-002/module_not_found}
+  - {item: 133, via: log, text: "Error: listen EADDRINUSE: address already in use :::3000", expect: APP-002/port_in_use}
+  - {item: 66, via: log, text: "connect ECONNREFUSED 10.0.0.1:5432", expect: APP-003/connection_refused}
+  - {item: 69, via: log, text: "getaddrinfo ENOTFOUND backend", expect: APP-003/dns_failure}
+  - {item: 135, via: helm, text: "Error: INSTALLATION FAILED: timed out waiting for the condition", expect: HLM-001/wait_timeout}
+  - {item: 137, via: helm, text: "Error: release: not found", expect: HLM-002/release_not_found}
+  - {item: 138, via: helm, text: "Error: UPGRADE FAILED: another operation (install/upgrade/rollback) is in progress", expect: HLM-003/release_locked}
+  - {item: 139, via: helm, text: "Error: parse error at (chart/templates/d.yaml:4): unexpected }", expect: HLM-004/template_error}
+  - {item: 143, via: helm, text: "Error: failed to create resource: yaml: line 9: mapping values are not allowed in this context", expect: HLM-004/yaml_error}
+  - {item: 141, via: helm, text: "Error: INSTALLATION FAILED: cannot re-use a name that is still in use", expect: HLM-005/name_in_use}
+  - {item: 142, via: helm, text: 'Error: rendered manifests contain a resource that already exists. Service "x" in namespace "n" exists and cannot be imported into the current release', expect: HLM-006/ownership_conflict}
+  - {item: 149, via: helm, text: "Error: UPGRADE FAILED: context deadline exceeded", expect: HLM-009/deadline_exceeded}
+  - {item: 147, via: helm, text: 'Error: UPGRADE FAILED: Deployment.apps "x" is invalid: spec.template.spec.containers[0].image: Required value', expect: HLM-010/manifest_rejected}
+  - {item: 170, via: helm, text: 'Error: unable to build kubernetes objects: no matches for kind "ServiceMonitor" in version "monitoring.coreos.com/v1"', expect: HLM-011/unknown_kind}
+  - {item: 145, via: helm, text: 'Error: chart "web" version "9.9.9" not found in repository', expect: HLM-012/chart_not_found}
+  - {item: 172, via: helm, text: 'Error: namespaces "shop" not found', expect: HLM-014/namespace_not_found}
+  - {item: 148, via: helm, text: "release web: status: pending-upgrade", expect: HLM-003/release_locked}

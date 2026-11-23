@@ -116,7 +116,7 @@ def test_healthy_pods_with_stuck_rollout_is_not_no_issue() -> None:
         available_replicas=3,
         conditions=(__import__("kdiag").Condition(
             type="ReplicaFailure", status="True", reason="FailedCreate",
-            message="pods is forbidden: exceeded quota password=hunter2-canary"),))
+            message="pods is forbidden: opaque reason password=hunter2-canary"),))
     src = FakeSource([REF], pods=[pod(containers=[ctr(ready=True)])], status=stuck)
     r = run(diagnose(cluster_input(), src, now=NOW))
     assert r.status == "unknown" and r.primary is None
@@ -184,3 +184,16 @@ def test_oversized_evidence_lists_are_rejected() -> None:
     with pytest.raises(ValidationError):
         DiagnosisInput(mode="evidence", events=tuple(
             EventEvidence(object_kind="Pod", object_name="p") for _ in range(5001)))
+
+
+def test_quota_in_replica_failure_condition_is_diagnosed_not_unknown() -> None:
+    from kdiag import Condition
+    stuck = WorkloadStatus(
+        generation=5, observed_generation=5, replicas=3, updated_replicas=0, ready_replicas=3,
+        available_replicas=3,
+        conditions=(Condition(type="ReplicaFailure", status="True", reason="FailedCreate",
+                              message="pods is forbidden: exceeded quota: team-quota"),))
+    src = FakeSource([REF], pods=[pod(containers=[ctr(ready=True)])], status=stuck)
+    r = run(diagnose(cluster_input(), src, now=NOW))
+    assert r.primary and (r.primary.rule_id, r.primary.sub_cause) == ("ADM-001", "quota")
+    assert [f.rule_id for f in r.supporting] == ["WL-001"]

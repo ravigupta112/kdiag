@@ -7,6 +7,9 @@ All quantifiers are bounded so cost stays linear in input size.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 _KEYS = (r"password|passwd|pass|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key"
          r"|credential|cookie|authorization")
@@ -28,6 +31,25 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 MASK_ERROR = "[REDACTED:mask-error]"
+_COUNTER: ContextVar[list[int] | None] = ContextVar("kdiag.mask_counter", default=None)
+
+
+@contextmanager
+def track_masking() -> Iterator[list[int]]:
+    """Counts how many strings had something redacted inside the block (for metrics)."""
+    box = [0]
+    token = _COUNTER.set(box)
+    try:
+        yield box
+    finally:
+        _COUNTER.reset(token)
+
+
+def _bump() -> None:
+    box = _COUNTER.get()
+    if box is not None:
+        box[0] += 1
+
 DEFAULT_MAX_LEN = 2000
 
 
@@ -36,8 +58,24 @@ def mask_text(value: str | None, max_len: int = DEFAULT_MAX_LEN) -> str | None:
         return None
     try:
         out = value[: max_len * 2]
+        before = out
         for pattern, repl in _PATTERNS:
             out = pattern.sub(repl, out)
+        if out != before:
+            _bump()
         return out[:max_len]
     except Exception:  # noqa: BLE001 - fail closed on any masking failure
+        _bump()
         return MASK_ERROR
+
+
+def contains_secret(text: str) -> bool:
+    """Detection only: True if text still looks sensitive. Already-redacted values do not count."""
+    try:
+        for pattern, _ in _PATTERNS:
+            for m in pattern.finditer(text):
+                if "[REDACTED" not in m.group(0):
+                    return True
+        return False
+    except Exception:  # noqa: BLE001 - when in doubt, treat as sensitive
+        return True

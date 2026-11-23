@@ -4,7 +4,18 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 
-from .models import EventEvidence, PodEvidence, Target, WorkloadRef, WorkloadStatus
+from .models import (
+    ContainerLog,
+    EventEvidence,
+    JobEvidence,
+    NodeEvidence,
+    PodEvidence,
+    PvcEvidence,
+    ServiceEvidence,
+    Target,
+    WorkloadRef,
+    WorkloadStatus,
+)
 from .sources import SourceError
 
 
@@ -17,10 +28,18 @@ class FakeSource:
         fail: dict[str, SourceError] | None = None,
         delay: dict[str, float] | None = None,
         status: WorkloadStatus | None = None,
+        nodes: list[NodeEvidence] | None = None,
+        pvcs: list[PvcEvidence] | None = None,
+        services: list[ServiceEvidence] | None = None,
+        jobs: list[JobEvidence] | None = None,
+        logs: list[ContainerLog] | None = None,
+        namespace_phase: str = "Active",
     ):
-        self.status = status
         self.workloads, self.pods, self.events = workloads, pods or [], events or []
         self.fail, self.delay = fail or {}, delay or {}
+        self.status = status
+        self.nodes, self.pvcs, self.services = nodes or [], pvcs or [], services or []
+        self.jobs, self.logs, self.namespace_phase = jobs or [], logs or [], namespace_phase
         self.calls: list[str] = []
 
     async def _gate(self, name: str) -> None:
@@ -53,3 +72,36 @@ class FakeSource:
     ) -> list[EventEvidence]:
         await self._gate("list_events")
         return self.events[:limit]
+
+    async def get_nodes(self, names: Sequence[str]) -> list[NodeEvidence]:
+        await self._gate("get_nodes")
+        return [n for n in self.nodes if n.name in set(names)]
+
+    async def list_pvcs(self, ref: WorkloadRef, names: Sequence[str]) -> list[PvcEvidence]:
+        await self._gate("list_pvcs")
+        return [p for p in self.pvcs if p.name in set(names)]
+
+    async def list_services(
+        self, ref: WorkloadRef, pods: Sequence[PodEvidence]
+    ) -> list[ServiceEvidence]:
+        await self._gate("list_services")
+        return list(self.services)
+
+    async def list_jobs(self, ref: WorkloadRef) -> list[JobEvidence]:
+        await self._gate("list_jobs")
+        return list(self.jobs)
+
+    async def get_namespace_phase(self, namespace: str) -> str:
+        await self._gate("get_namespace_phase")
+        return self.namespace_phase
+
+    async def get_logs(
+        self, ref: WorkloadRef, pod: str, container: str, previous: bool,
+        tail_lines: int, limit_bytes: int,
+    ) -> ContainerLog:
+        await self._gate("get_logs")
+        for lg in self.logs:
+            if (lg.pod, lg.container, lg.previous) == (pod, container, previous):
+                return ContainerLog(pod=pod, container=container, previous=previous,
+                                    lines=lg.lines[-tail_lines:])
+        raise SourceError("not_found")

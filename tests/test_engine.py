@@ -113,8 +113,9 @@ def test_s9_forbidden_pods_skips_rules_instead_of_reporting_clean() -> None:
     src = FakeSource([REF], pods=[pull_pod(PULL)], fail={"list_pods": SourceError("forbidden")})
     r = run(diagnose(cluster_input(), src, now=NOW))
     assert r.status == "partial" and r.primary is None
-    assert {s.rule_id for s in r.skipped_rules} == {"IMG-001", "POD-004", "POD-005", "SCHED-001"}
-    assert "needs pods" in render_text(r)
+    skipped = {s.rule_id for s in r.skipped_rules if "pods" in s.missing}
+    assert {"IMG-001", "POD-004", "POD-005", "SCHED-001", "CFG-001"} <= skipped
+    assert "needs pods:" in render_text(r)
 
 
 def test_s10_cluster_unreachable() -> None:

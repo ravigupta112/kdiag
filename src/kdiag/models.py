@@ -14,23 +14,21 @@ SCHEMA_VERSION = 1
 
 Confidence = Literal["high", "medium", "low"]
 Status = Literal[
-    "diagnosed",
-    "unknown",
-    "partial",
-    "no_issue_detected",
-    "target_not_found",
-    "ambiguous_target",
-    "cluster_unreachable",
+    "diagnosed", "unknown", "partial", "no_issue_detected",
+    "target_not_found", "ambiguous_target", "cluster_unreachable",
 ]
 Mode = Literal["evidence", "cluster", "hybrid"]
 ReadFailure = Literal["forbidden", "not_found", "timeout", "rate_limited", "unreachable", "error"]
 WorkloadKind = Literal["Deployment", "StatefulSet", "Job", "CronJob"]
-
+MatchedBy = Literal["owner", "selector", "name", "supplied"]
 
 Name = Annotated[str, StringConstraints(max_length=253)]
 # Kubernetes DNS-1123 forms. Strict so names can never smuggle selector/URL syntax into API calls.
 DnsSubdomain = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")]
 DnsLabel = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")]
+Labels = Annotated[dict[Name, Name], Field(max_length=64)]
+LogLine = Annotated[str, StringConstraints(max_length=4000)]
+Msg = Annotated[str, StringConstraints(max_length=20_000)]
 
 
 class _M(BaseModel):
@@ -53,7 +51,7 @@ class Condition(_M):
     type: Name
     status: Name
     reason: Name | None = None
-    message: str | None = Field(default=None, max_length=20_000)
+    message: Msg | None = None
 
 
 class ContainerEvidence(_M):
@@ -62,10 +60,12 @@ class ContainerEvidence(_M):
     ready: bool = False
     restart_count: int = 0
     waiting_reason: Name | None = None
-    waiting_message: str | None = Field(default=None, max_length=20_000)
+    waiting_message: Msg | None = None
     terminated_reason: Name | None = None
+    terminated_message: Msg | None = None
     terminated_exit_code: int | None = None
     last_terminated_reason: Name | None = None
+    last_terminated_message: Msg | None = None
     last_exit_code: int | None = None
     memory_limit: Name | None = None
 
@@ -74,7 +74,12 @@ class PodEvidence(_M):
     name: Name
     namespace: Name
     phase: Name = "Unknown"
+    reason: Name | None = None  # pod status reason, e.g. "Evicted"
+    message: Msg | None = None
     node_name: Name | None = None
+    labels: Labels = Field(default_factory=dict)
+    pvc_claims: tuple[Name, ...] = Field(default=(), max_length=50)  # claim names only
+    matched_by: MatchedBy = "supplied"
     conditions: tuple[Condition, ...] = Field(default=(), max_length=50)
     containers: tuple[ContainerEvidence, ...] = Field(default=(), max_length=50)
 
@@ -91,12 +96,49 @@ class WorkloadStatus(_M):
     conditions: tuple[Condition, ...] = Field(default=(), max_length=50)
 
 
+class NodeEvidence(_M):
+    name: Name
+    conditions: tuple[Condition, ...] = Field(default=(), max_length=50)
+
+
+class PvcEvidence(_M):
+    name: Name
+    namespace: Name
+    phase: Name = "Unknown"
+    storage_class: Name | None = None
+
+
+class ServiceEvidence(_M):
+    name: Name
+    namespace: Name
+    selector: Labels = Field(default_factory=dict)
+    ready_endpoints: int = 0
+    not_ready_endpoints: int = 0
+    related_by: Literal["name", "label", "selector"] = "name"
+
+
+class JobEvidence(_M):
+    name: Name
+    namespace: Name
+    active: int = 0
+    failed: int = 0
+    succeeded: int = 0
+    conditions: tuple[Condition, ...] = Field(default=(), max_length=50)
+
+
+class ContainerLog(_M):
+    pod: Name
+    container: Name
+    previous: bool = False
+    lines: tuple[LogLine, ...] = Field(default=(), max_length=1000)
+
+
 class EventEvidence(_M):
     object_kind: Name
     object_name: Name
     type: Name = "Normal"
     reason: Name = ""
-    message: str = Field(default="", max_length=20_000)
+    message: Msg = ""
     timestamp: datetime | None = None
     count: int = 1
     time_unknown: bool = False
@@ -106,6 +148,7 @@ class PartialReadError(_M):
     resource: Name
     reason: ReadFailure
     retryable: bool = False
+    optional: bool = False  # cluster-scope reads (nodes, namespace) a namespaced Role may not grant
     detail: str | None = None
 
 
@@ -118,6 +161,9 @@ class Limits(_M):
     # ceiling on what a source may return; selection (failing pods first) happens after
     max_pods_fetched: int = Field(default=500, ge=1, le=2000)
     max_events_fetched: int = Field(default=2000, ge=1, le=10_000)
+    max_log_containers: int = Field(default=10, ge=0, le=50)
+    max_log_lines: int = Field(default=200, ge=1, le=1000)
+    max_log_bytes: int = Field(default=65_536, ge=1024, le=262_144)
     concurrency: int = Field(default=8, ge=1, le=32)
     request_timeout_s: float = Field(default=5.0, gt=0, le=60)
     overall_timeout_s: float = Field(default=30.0, gt=0, le=300)
@@ -138,7 +184,14 @@ class DiagnosisInput(_M):
     release: DnsSubdomain | None = None
     pods: tuple[PodEvidence, ...] = Field(default=(), max_length=500)
     events: tuple[EventEvidence, ...] = Field(default=(), max_length=5000)
+    nodes: tuple[NodeEvidence, ...] = Field(default=(), max_length=100)
+    pvcs: tuple[PvcEvidence, ...] = Field(default=(), max_length=100)
+    services: tuple[ServiceEvidence, ...] = Field(default=(), max_length=100)
+    jobs: tuple[JobEvidence, ...] = Field(default=(), max_length=50)
+    logs: tuple[ContainerLog, ...] = Field(default=(), max_length=100)
+    namespace_phase: Name | None = None
     workload_status: WorkloadStatus | None = None
+    collect_logs: bool = False  # cluster/hybrid: read container logs (privacy-sensitive, off by default)
     helm_output: str | None = Field(default=None, max_length=1_000_000)
     job_log: str | None = Field(default=None, max_length=1_000_000)
     window_start: datetime | None = None
@@ -158,6 +211,12 @@ class DiagnosisInput(_M):
 class Evidence(_M):
     pods: tuple[PodEvidence, ...] = ()
     events: tuple[EventEvidence, ...] = ()
+    nodes: tuple[NodeEvidence, ...] = ()
+    pvcs: tuple[PvcEvidence, ...] = ()
+    services: tuple[ServiceEvidence, ...] = ()
+    jobs: tuple[JobEvidence, ...] = ()
+    logs: tuple[ContainerLog, ...] = ()
+    namespace_phase: str | None = None
     workload: WorkloadStatus | None = None
     available: frozenset[str] = frozenset()
     partial_errors: tuple[PartialReadError, ...] = ()

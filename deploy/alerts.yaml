@@ -1,0 +1,60 @@
+# Prometheus alert rules for kdiag. Thresholds are starting points: tune after a week of real data.
+groups:
+  - name: kdiag
+    rules:
+      - alert: KdiagUnknownCauseRateHigh
+        expr: sum(rate(kdiag_unknown_cause_total[1h])) / sum(rate(kdiag_diagnosis_total[1h])) > 0.4
+        for: 1h
+        labels: {severity: ticket}
+        annotations:
+          summary: "More than 40% of diagnoses end as unknown"
+          runbook: "docs/OPERATIONS.md#unknown-rate-high"
+      - alert: KdiagRuleExceptions
+        expr: sum(increase(kdiag_rule_exceptions_total[15m])) > 0
+        for: 0m
+        labels: {severity: ticket}
+        annotations:
+          summary: "A diagnosis rule is raising exceptions"
+          runbook: "docs/OPERATIONS.md#rule-exceptions"
+      - alert: KdiagPartialReadsHigh
+        expr: sum(rate(kdiag_partial_reads_total[30m])) / sum(rate(kdiag_diagnosis_total[30m])) > 0.3
+        for: 30m
+        labels: {severity: page}
+        annotations:
+          summary: "Many diagnoses have missing evidence (RBAC, timeouts or API errors)"
+          runbook: "docs/OPERATIONS.md#partial-reads-high"
+      - alert: KdiagTimeoutsHigh
+        expr: sum(rate(kdiag_timeouts_total[15m])) > 0.1
+        for: 15m
+        labels: {severity: page}
+        annotations:
+          summary: "Kubernetes reads are timing out"
+          runbook: "docs/OPERATIONS.md#timeouts-high"
+      - alert: KdiagBackpressure
+        expr: sum(increase(kdiag_backpressure_total[10m])) > 10
+        for: 0m
+        labels: {severity: ticket}
+        annotations:
+          summary: "The service is rejecting requests because it is saturated"
+          runbook: "docs/OPERATIONS.md#backpressure"
+      - alert: KdiagPersistenceErrors
+        expr: sum(increase(kdiag_persistence_errors_total[15m])) > 0
+        for: 0m
+        labels: {severity: page}
+        annotations:
+          summary: "Saving diagnosis history is failing"
+          runbook: "docs/OPERATIONS.md#persistence-errors"
+      - alert: KdiagSlowDiagnoses
+        expr: histogram_quantile(0.95, sum(rate(kdiag_diagnosis_duration_seconds_bucket[15m])) by (le)) > 15
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "p95 diagnosis time is above 15 seconds"
+          runbook: "docs/OPERATIONS.md#slow-diagnoses"
+      - alert: KdiagExportsBlocked
+        expr: sum(increase(kdiag_prompt_exports_total{result="blocked"}[1h])) > 0
+        for: 0m
+        labels: {severity: page}
+        annotations:
+          summary: "A prompt export was blocked because sensitive-looking text survived masking"
+          runbook: "docs/OPERATIONS.md#exports-blocked"

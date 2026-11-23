@@ -27,10 +27,14 @@ def render_text(r: DiagnosisReport) -> str:
     if r.partial_errors:
         out.append("NOT COLLECTED")
         out += [f"  - {e.resource}: {e.reason}" + (" (retry may help)" if e.retryable else "")
+                + (" (optional read)" if e.optional else "")
                 for e in r.partial_errors]
     if r.skipped_rules:
-        out.append("RULES SKIPPED (missing evidence)")
-        out += [f"  - {s.rule_id}: needs {', '.join(s.missing)}" for s in r.skipped_rules]
+        by_kind: dict[str, list[str]] = {}
+        for sk in r.skipped_rules:
+            by_kind.setdefault(", ".join(sk.missing), []).append(sk.rule_id)
+        out.append(f"RULES SKIPPED ({len(r.skipped_rules)}, missing evidence)")
+        out += [f"  - needs {kind}: {', '.join(sorted(ids))}" for kind, ids in sorted(by_kind.items())]
     if r.notes:
         out.append("NOTES")
         out += [f"  - {n}" for n in r.notes]

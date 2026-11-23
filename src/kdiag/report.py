@@ -59,11 +59,15 @@ def _pods_healthy(ev: Evidence) -> bool:
 
 def _healthy(ev: Evidence) -> bool:
     """Healthy pods are not enough: old-revision pods can look fine while the rollout is stuck."""
+    if ev.truncated:  # we did not see everything, so we cannot say everything is fine
+        return False
     return _pods_healthy(ev) and ev.workload is not None and _rollout_complete(ev.workload)
 
 
 def _notes(ev: Evidence, primary: Finding | None) -> tuple[str, ...]:
     notes: list[str] = []
+    if ev.truncated:
+        notes.append("Evidence was truncated to fit limits: some pods or events were not inspected")
     ws = ev.workload
     if ws is not None and not _rollout_complete(ws):
         n = ws.replicas
@@ -98,7 +102,7 @@ def build_report(
     status: Status
     if status_override:
         status = status_override
-    elif ev.partial_errors:
+    elif any(not e.optional for e in ev.partial_errors):
         status = "partial"  # a primary finding may still be present; the gaps are listed
     elif primary:
         status = "diagnosed"

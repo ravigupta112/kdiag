@@ -1,0 +1,64 @@
+# Read-only access for kdiag. Apply the Role once per namespace kdiag may diagnose.
+# There is intentionally no access to secrets, configmaps, pods/exec, or any write verb.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kdiag-reader
+  namespace: kdiag-system
+---
+# Optional cluster-scope reads: node conditions and namespace phase. Without this ClusterRole
+# kdiag still works; those two reads are reported as optional gaps.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kdiag-cluster-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kdiag-reader
+  namespace: REPLACE_WITH_TARGET_NAMESPACE
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "services", "persistentvolumeclaims"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kdiag-reader
+  namespace: REPLACE_WITH_TARGET_NAMESPACE
+subjects:
+  - kind: ServiceAccount
+    name: kdiag-reader
+    namespace: kdiag-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kdiag-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kdiag-cluster-reader
+subjects:
+  - kind: ServiceAccount
+    name: kdiag-reader
+    namespace: kdiag-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kdiag-cluster-reader
